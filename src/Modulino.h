@@ -1062,4 +1062,65 @@ protected:
   uint8_t match[1] = { 0x04 };  // same as fw main.c
 };
 
+class ModulinoMicrophone : public Module {
+public:
+  ModulinoMicrophone(uint8_t address = 0x2A, ModulinoHubPort* hubPort = nullptr)
+    : Module(address, "MICROPHONE", hubPort) {}
+  ModulinoMicrophone(ModulinoHubPort* hubPort, uint8_t address = 0x2A)
+    : Module(address, "MICROPHONE", hubPort) {}
+
+  /**
+   * @brief Fetches a new block of 64 linear PCM audio samples from the microphone module.
+   * @return true if the I2C transmission succeeded.
+   */
+  bool update() {
+    uint8_t raw_bytes[128];
+  
+    if (!read(raw_bytes, 128)) {
+      return false;
+    }
+
+    // Convert raw I2C bytes into 16-bit signed linear PCM samples (Little Endian)
+    for (int i = 0; i < 64; i++) {
+      _buffer[i] = (int16_t)(raw_bytes[i * 2] | (raw_bytes[i * 2 + 1] << 8));
+    }
+    return true;
+  }
+
+  /**
+   * @brief Gets a single signed 16-bit linear PCM audio sample from the current buffer.
+   * @param index Sample index (0 to 63).
+   * @return The 16-bit signed PCM sample value (-32768 to 32767).
+   */
+  int16_t getPcmSample(int index) {
+    if (index >= 0 && index < 64) {
+      return _buffer[index];
+    }
+    return 0;
+  }
+
+  /**
+   * @brief Gets the pointer to the internal 16-bit signed linear PCM buffer.
+   * @return Pointer to the int16_t array of 64 PCM samples (ideal for FFT/DSP).
+   */
+  int16_t* getPcmBuffer() {
+    return _buffer;
+  }
+
+  virtual uint8_t discover() {
+    for (unsigned int i = 0; i < sizeof(match)/sizeof(match[0]); i++) {
+      if (scan(match[i])) {
+        return match[i];
+      }
+    }
+    return 0xFF;
+  }
+
+private:
+  int16_t _buffer[64]; // Internal storage for 64 signed 16-bit linear PCM samples
+
+protected:
+  uint8_t match[1] = { 0x54 }; 
+};
+
 #endif
