@@ -1065,25 +1065,47 @@ protected:
 class ModulinoMicrophone : public Module {
 public:
   ModulinoMicrophone(uint8_t address = 0xFF, ModulinoHubPort* hubPort = nullptr)
-    : Module(address, "MICROPHONE", hubPort) {}
+    : Module(address, "MICROPHONE", hubPort) {
+      resetDecoder();
+    }
   ModulinoMicrophone(ModulinoHubPort* hubPort, uint8_t address = 0xFF)
-    : Module(address, "MICROPHONE", hubPort) {}
+    : Module(address, "MICROPHONE", hubPort) {
+      resetDecoder();
+    }
+
+  /**
+   * @brief Resets the ADPCM decoder state (useful at startup or on sync loss)
+   */
+  void resetDecoder() {
+    _predicted_sample = 0;
+    _index = 0;
+  }
 
   /**
    * @brief Fetches a new block of 64 linear PCM audio samples from the microphone module.
    * @return true if the I2C transmission succeeded.
    */
   bool update() {
-    uint8_t raw_bytes[128];
+    uint8_t adpcm_bytes[32];
   
-    if (!read(raw_bytes, 128)) {
+    if (!read(adpcm_bytes, 32)) {
       return false;
     }
 
-    // Convert raw I2C bytes into 16-bit signed linear PCM samples (Little Endian)
-    for (int i = 0; i < 64; i++) {
-      _buffer[i] = (int16_t)(raw_bytes[i * 2] | (raw_bytes[i * 2 + 1] << 8));
+    int sample_idx = 0;
+
+    // Decode 32 ADPCM bytes into 64 linear PCM samples
+    for (int i = 0; i < 32; i++) {
+      uint8_t original_byte = adpcm_bytes[i];
+
+      // Extract low and high 4-bit nibbles
+      uint8_t low_nibble  = original_byte & 0x0F;
+      uint8_t high_nibble = (original_byte >> 4) & 0x0F;
+
+      _buffer[sample_idx++] = decodeSample(low_nibble);
+      _buffer[sample_idx++] = decodeSample(high_nibble);
     }
+
     return true;
   }
 
@@ -1101,7 +1123,7 @@ public:
 
   /**
    * @brief Gets the pointer to the internal 16-bit signed linear PCM buffer.
-   * @return Pointer to the int16_t array of 64 PCM samples (ideal for FFT/DSP).
+   * @return Pointer to the int16_t array of 64 PCM samples.
    */
   int16_t* getPcmBuffer() {
     return _buffer;
@@ -1117,7 +1139,62 @@ public:
   }
 
 private:
-  int16_t _buffer[64]; // Internal storage for 64 signed 16-bit linear PCM samples
+  int16_t _buffer[64]; // Output buffer for decoded PCM samples
+
+  // ADPCM decoder internal state
+  int16_t _predicted_sample;
+  int8_t _index;
+
+  // Standard IMA ADPCM tables
+  const int IndexTable[16] = {
+      -1, -1, -1, -1, 2, 4, 6, 8,
+      -1, -1, -1, -1, 2, 4, 6, 8
+  };
+
+  const int StepTable[89] = {
+      7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
+      19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+      50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+      130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+      337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+      876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+      2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
+      5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+      15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+  };
+
+  /**
+   * @brief Decodes a single 4-bit ADPCM nibble into a 16-bit linear PCM sample.
+   */
+  int16_t decodeSample(uint8_t code) {
+    int step = StepTable[_index];
+    
+    // Inverse quantization
+    int diffq = step >> 3;
+    if (code & 4) diffq += step;
+    if (code & 2) diffq += (step >> 1);
+    if (code & 1) diffq += (step >> 2);
+    
+    // Apply sign bit (Bit 3)
+    long pred = _predicted_sample;
+    if (code & 8) {
+      pred -= diffq;
+    } else {
+      pred += diffq;
+    }
+    
+    // Clamp to 16-bit signed integer limits
+    if (pred > 32767) pred = 32767;
+    else if (pred < -32768) pred = -32768;
+    
+    // Update step index
+    _index += IndexTable[code & 7];
+    if (_index < 0) _index = 0;
+    if (_index > 88) _index = 88;
+    
+    _predicted_sample = (int16_t)pred;
+    return _predicted_sample;
+  }
 
 protected:
   uint8_t match[1] = { 0x54 }; 

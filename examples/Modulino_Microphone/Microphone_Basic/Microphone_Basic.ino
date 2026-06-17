@@ -17,7 +17,7 @@ ModulinoMicrophone mic;
 // Since the STM32 ADF (Acoustic Digital Filter) samples continuously in the background,
 // Arduino must poll the I2C bus at a fixed interval to match the hardware block rate.
 unsigned long last_check_micros = 0;
-const unsigned long TIMING_SLOT_MICROS = 16384; // 16.384 ms block interval (64 samples @ ~3.9 kHz)
+const unsigned long TIMING_SLOT_MICROS = 4096; // 4.096 ms block interval (64 samples @ 15.625 kHz)
 
 void setup() {
   Serial.begin(115200);
@@ -42,6 +42,8 @@ void loop() {
       for (int i = 0; i < 64; i++) {
         // Access each individual 16-bit signed linear PCM sample
         Serial.println(mic.getPcmSample(i)); 
+        // Audio data travels compressed over I2C using the IMA ADPCM codec to optimize bandwidth,
+        // and it is automatically decoded into standard linear PCM by the library.
       }
     }
   }
