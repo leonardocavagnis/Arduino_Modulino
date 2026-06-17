@@ -1064,9 +1064,9 @@ protected:
 
 class ModulinoMicrophone : public Module {
 public:
-  ModulinoMicrophone(uint8_t address = 0x2A, ModulinoHubPort* hubPort = nullptr)
+  ModulinoMicrophone(uint8_t address = 0xFF, ModulinoHubPort* hubPort = nullptr)
     : Module(address, "MICROPHONE", hubPort) {}
-  ModulinoMicrophone(ModulinoHubPort* hubPort, uint8_t address = 0x2A)
+  ModulinoMicrophone(ModulinoHubPort* hubPort, uint8_t address = 0xFF)
     : Module(address, "MICROPHONE", hubPort) {}
 
   /**
