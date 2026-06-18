@@ -22,7 +22,11 @@ const unsigned long TIMING_SLOT_MICROS = 4096; // 4.096 ms block interval (64 sa
 void setup() {
   Serial.begin(115200);
   Modulino.begin();
-  mic.begin();
+
+  if (!mic.begin()) {
+    Serial.println("Error: Modulino Microphone not detected.");
+    while(1);
+  }
 
   // The audio data retrieved from the Modulino Microphone is formatted as Pulse-Code Modulation (PCM):
   // - Linear PCM represents analog audio signals digitally by sampling the amplitude at regular intervals.
