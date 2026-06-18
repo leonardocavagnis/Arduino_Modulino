@@ -240,41 +240,6 @@ if (mic.update()) {
   int16_t sample = mic.getPcmSample(0);  // Get the first sample of the current 64-sample block
 }
 ```
-## Example Usage
-
-Here’s an example of how to use the Modulino Microphone in a program:
-
-```cpp
-// This sketch demonstrates how to use the Modulino Microphone module.
-// It listens for a new audio chunk to be ready, then reads and prints the 
-// first sample of that block to the Serial Monitor.
-
-#include <Arduino_Modulino.h>
-
-ModulinoMicrophone mic;  // Declare a Microphone Modulino
-
-void setup() {
-  Serial.begin(115200);
-  while(!Serial) {}
-
-  Modulino.begin();        // Initialize the Modulino library
-
-  if (mic.begin()) {       // Initialize the Microphone module
-    Serial.println("Microphone initialized successfully!");
-  } else {
-    Serial.println("Failed to initialize the Microphone.");
-    while(1);
-  }
-}
-
-void loop() {
-  if (mic.update()) {      // Check if a new 64-sample audio block is ready
-    int16_t firstSample = mic.getPcmSample(0); // Fetch the first sample from the block
-    Serial.print("Audio Sample: ");
-    Serial.println(firstSample);
-  }
-}
-```
 
 ## Examples
 
