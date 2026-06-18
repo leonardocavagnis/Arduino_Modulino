@@ -1092,6 +1092,8 @@ public:
       return false;
     }
 
+    resetDecoder();
+
     int sample_idx = 0;
 
     // Decode 32 ADPCM bytes into 64 linear PCM samples
