@@ -311,7 +311,19 @@ bool flashU3(uint8_t bl_i2c_addr, const uint8_t* binary, size_t lenght, bool ver
     delay(10);
   }
   SerialDebug.println("GO");
-  uint8_t jump_buf[5] = { 0x8, 0x00, 0x00, 0x00, 0x8 };
+  // Extract the real execution entry point (Reset Handler) from bytes 4-7 of the binary (Little-Endian)
+  uint32_t reset_handler = ((uint32_t)binary[7] << 24) |
+                           ((uint32_t)binary[6] << 16) |
+                           ((uint32_t)binary[5] << 8)  |
+                           ((uint32_t)binary[4]);
+
+  uint8_t jump_buf[5];
+  jump_buf[0] = (reset_handler >> 24) & 0xFF;
+  jump_buf[1] = (reset_handler >> 16) & 0xFF;
+  jump_buf[2] = (reset_handler >> 8)  & 0xFF;
+  jump_buf[3] = reset_handler & 0xFF;
+  jump_buf[4] = jump_buf[0] ^ jump_buf[1] ^ jump_buf[2] ^ jump_buf[3]; // Calculate XOR Checksum
+
   resp = command(bl_i2c_addr, 0x21, jump_buf, 5, nullptr, 0, verbose);
   return true;
 }
