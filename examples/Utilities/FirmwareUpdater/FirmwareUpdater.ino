@@ -37,33 +37,50 @@
 #include "Wire.h"
 #include "fw.h"
 #include "fw_ledmatrix.h"
+#include "fw_microphone.h"
 
 // Reference: STM32 I2C bootloader protocol documentation
 // https://www.st.com/resource/en/application_note/an4221-i2c-protocol-used-in-the-stm32-bootloader-stmicroelectronics.pdf
+#define BL_C0_I2C_ADDRESS 0x64  // STM32C0 bootloader address
+#define BL_U3_I2C_ADDRESS 0x6C  // STM32U3 bootloader address
 
-bool flash(const uint8_t* binary, size_t lenght, bool verbose = true);
+bool flashC0(uint8_t bl_i2c_addr, const uint8_t* binary, size_t lenght, bool verbose = true);
+bool flashU3(uint8_t bl_i2c_addr, const uint8_t* binary, size_t lenght, bool verbose = true);
 Module modulino;
 
 // Change this to true if programming a blank Modulino LED Matrix
 // For all other modules, keep this false
 bool force_led_matrix = false;
 
+// Change this to true if programming a blank Modulino Microphone
+// For all other modules, keep this false
+bool force_microphone = false;
+
+bool is_boot_mode = false;
+
 void setup() {
   Serial.begin(115200);
+  while(!Serial) { }
+
   // Initialize Modulino communication
   Modulino.begin();
   // Set I2C clock to 400kHz for faster communication
   modulino.getWire()->setClock(400000);
 
-  // Check if module is already in bootloader mode (address 0x64)
-  modulino.getWire()->beginTransmission(0x64);
-  auto is_boot_mode = (modulino.getWire()->endTransmission() == 0);
+  // Check if module is already in bootloader mode (address 0x64 - STM32C0)
+  modulino.getWire()->beginTransmission(BL_C0_I2C_ADDRESS);
+  is_boot_mode = (modulino.getWire()->endTransmission() == 0);
+
+  // Check if it's a Modulino Microphone in bootloader mode (address 0x6C - STM32U3)
+  modulino.getWire()->beginTransmission(BL_U3_I2C_ADDRESS); 
+  is_boot_mode |= (modulino.getWire()->endTransmission() == 0);
 
   if (is_boot_mode) {
     Serial.println("boot mode");
   }
 
   bool is_led_matrix = false;
+  bool is_microphone = false;
 
   // Send reset command to module if not already in boot mode
   // IMPORTANT: Connect only ONE module at a time
@@ -76,20 +93,41 @@ void setup() {
       Serial.println("led matrix mode");
     }
 
+    // Check if connected module is a microphone (address 0x2A)
+    modulino.getWire()->beginTransmission(0x2A);
+    is_microphone = (modulino.getWire()->endTransmission() == 0);
+
+    if (is_microphone) {
+      Serial.println("microphone mode");
+    }
+
     // Send reset command to enter bootloader mode
     if (sendReset() != 0) {
       Serial.println("Send reset failed");
+      while(1);
     }
+  }
+
+  if (is_microphone || force_microphone) {
+    // Restart the I2C bus after reset to clear any pending states and ensure a clean connection to the bootloader
+    modulino.getWire()->end();
+    delay(50);
+    modulino.getWire()->begin();
+    modulino.getWire()->setClock(400000);
   }
 
   // Flash the appropriate firmware based on module type
   bool result;
   if (is_led_matrix || force_led_matrix) {
     // Flash LED Matrix firmware
-    result = flash(matrix_node_base_bin, matrix_node_base_bin_len);
+    result = flashC0(BL_C0_I2C_ADDRESS, matrix_node_base_bin, matrix_node_base_bin_len);
+  } else if (is_microphone || force_microphone) {
+    // Flash Microphone firmware
+    Serial.println("Start flashing Modulino Microphone...");
+    result = flashU3(BL_U3_I2C_ADDRESS, microphone_node_base_bin, microphone_node_base_bin_len);
   } else {
     // Flash standard Modulino firmware
-    result = flash(node_base_bin, node_base_bin_len);
+    result = flashC0(BL_C0_I2C_ADDRESS, node_base_bin, node_base_bin_len);
   }
 
 #if defined(ARDUINO_UNOWIFIR4)
@@ -146,14 +184,14 @@ void matrixInitAndDraw(char* text) {
 }
 #endif
 
-bool flash(const uint8_t* binary, size_t lenght, bool verbose) {
+bool flashC0(uint8_t bl_i2c_addr, const uint8_t* binary, size_t lenght, bool verbose) {
 
   SerialVerbose SerialDebug(verbose);
 
   uint8_t resp_buf[255];
   int resp;
   SerialDebug.println("GET_COMMAND");
-  resp = command(0, nullptr, 0, resp_buf, 20, verbose);
+  resp = command(bl_i2c_addr, 0, nullptr, 0, resp_buf, 20, verbose);
 
   if (resp < 0) {
     SerialDebug.println("Failed :(");
@@ -165,20 +203,20 @@ bool flash(const uint8_t* binary, size_t lenght, bool verbose) {
   }
 
   SerialDebug.println("GET_ID");
-  resp = command(2, nullptr, 0, resp_buf, 3, verbose);
+  resp = command(bl_i2c_addr, 2, nullptr, 0, resp_buf, 3, verbose);
   for (int i = 0; i < resp; i++) {
     SerialDebug.println(resp_buf[i], HEX);
   }
 
   SerialDebug.println("GET_ID");
-  resp = command(2, nullptr, 0, resp_buf, 3, verbose);
+  resp = command(bl_i2c_addr, 2, nullptr, 0, resp_buf, 3, verbose);
   for (int i = 0; i < resp; i++) {
     SerialDebug.println(resp_buf[i], HEX);
   }
 
   SerialDebug.println("MASS_ERASE");
   uint8_t erase_buf[3] = { 0xFF, 0xFF, 0x0 };
-  resp = command(0x44, erase_buf, 3, nullptr, 0, verbose);
+  resp = command(bl_i2c_addr, 0x44, erase_buf, 3, nullptr, 0, verbose);
   for (int i = 0; i < resp; i++) {
     SerialDebug.println(resp_buf[i], HEX);
   }
@@ -188,7 +226,7 @@ bool flash(const uint8_t* binary, size_t lenght, bool verbose) {
     SerialDebug.print("WRITE_PAGE ");
     SerialDebug.println(i, HEX);
     uint8_t write_buf[5] = { 8, 0, i / 256, i % 256 };
-    resp = command_write_page(0x32, write_buf, 5, &binary[i], 128, verbose);
+    resp = command_write_page(bl_i2c_addr, 0x32, write_buf, 5, &binary[i], 128, verbose);
     for (int i = 0; i < resp; i++) {
       SerialDebug.println(resp_buf[i], HEX);
     }
@@ -196,19 +234,97 @@ bool flash(const uint8_t* binary, size_t lenght, bool verbose) {
   }
   SerialDebug.println("GO");
   uint8_t jump_buf[5] = { 0x8, 0x00, 0x00, 0x00, 0x8 };
-  resp = command(0x21, jump_buf, 5, nullptr, 0, verbose);
+  resp = command(bl_i2c_addr, 0x21, jump_buf, 5, nullptr, 0, verbose);
+  return true;
+}
+
+bool flashU3(uint8_t bl_i2c_addr, const uint8_t* binary, size_t lenght, bool verbose) {
+
+  SerialVerbose SerialDebug(verbose);
+
+  uint8_t resp_buf[255];
+  int resp;
+  SerialDebug.println("GET_COMMAND");
+  resp = command(bl_i2c_addr, 0, nullptr, 0, resp_buf, 21, verbose); // NOTE: GET_COMMAND returns 21 bytes for STM32U3
+
+  if (resp < 0) {
+    SerialDebug.println("Failed :(");
+    return false;
+  }
+
+  for (int i = 0; i < resp; i++) {
+    SerialDebug.println(resp_buf[i], HEX);
+  }
+
+  SerialDebug.println("GET_ID");
+  resp = command(bl_i2c_addr, 2, nullptr, 0, resp_buf, 3, verbose);
+  for (int i = 0; i < resp; i++) {
+    SerialDebug.println(resp_buf[i], HEX);
+  }
+
+  SerialDebug.println("GET_ID");
+  resp = command(bl_i2c_addr, 2, nullptr, 0, resp_buf, 3, verbose);
+  for (int i = 0; i < resp; i++) {
+    SerialDebug.println(resp_buf[i], HEX);
+  }
+
+  delay(50);
+
+  SerialDebug.println("MASS_ERASE");
+  uint8_t erase_buf[3] = { 0xFF, 0xFF, 0x0 };
+  resp = command(bl_i2c_addr, 0x44, erase_buf, 3, nullptr, 0, verbose);
+  for (int i = 0; i < resp; i++) {
+    SerialDebug.println(resp_buf[i], HEX);
+  }
+
+  delay(50); // Short delay to allow the STM32U3 internal Flash controller to complete the mass erase operation
+
+  for (size_t i = 0; i < lenght; i += 128) {
+    SerialDebug.print("WRITE_PAGE ");
+    SerialDebug.println(i, HEX);
+
+    // Calculate the absolute 32-bit destination address in STM32U3 Flash
+    uint32_t target_address = 0x08000000 + i;
+    uint8_t write_buf[5];
+    // Prepare the 4-byte address buffer in Big-Endian format (MSB first)
+    write_buf[0] = (target_address >> 24) & 0xFF; // Base Flash indicator (0x08)
+    write_buf[1] = (target_address >> 16) & 0xFF; // Address high byte (0x00)
+    write_buf[2] = (target_address >> 8)  & 0xFF; // Address mid byte (MSB of offset)
+    write_buf[3] = target_address & 0xFF;         // Address low byte (LSB of offset)
+    write_buf[4] = 0; // Reserved for the XOR checksum, calculated inside command_write_page
+
+    // Prevent buffer overflow: handle the last chunk if it is smaller than 128 bytes
+    size_t chunk_size = 128;
+    if (i + chunk_size > lenght) {
+      chunk_size = lenght - i;
+    }
+
+    // Send the 128-byte aligned chunk to the bootloader via I2C WRITE command (0x32)
+    resp = command_write_page(bl_i2c_addr, 0x32, write_buf, 5, &binary[i], chunk_size, verbose);
+    if (resp < 0) {
+      SerialDebug.print("Failed to write at address 0x");
+      SerialDebug.println(target_address, HEX);
+      return false;
+    }
+
+    // Short delay to allow the STM32U3 internal Flash controller to complete the write cycle
+    delay(10);
+  }
+  SerialDebug.println("GO");
+  uint8_t jump_buf[5] = { 0x8, 0x00, 0x00, 0x00, 0x8 };
+  resp = command(bl_i2c_addr, 0x21, jump_buf, 5, nullptr, 0, verbose);
   return true;
 }
 
 int howmany;
-int command_write_page(uint8_t opcode, uint8_t* buf_cmd, size_t len_cmd, const uint8_t* buf_fw, size_t len_fw, bool verbose) {
+int command_write_page(uint8_t bl_i2c_addr, uint8_t opcode, uint8_t* buf_cmd, size_t len_cmd, const uint8_t* buf_fw, size_t len_fw, bool verbose) {
 
   SerialVerbose SerialDebug(verbose);
 
   uint8_t cmd[2];
   cmd[0] = opcode;
   cmd[1] = 0xFF ^ opcode;
-  modulino.getWire()->beginTransmission(100);
+  modulino.getWire()->beginTransmission(bl_i2c_addr);
   modulino.getWire()->write(cmd, 2);
   if (len_cmd > 0) {
     buf_cmd[len_cmd - 1] = 0;
@@ -216,23 +332,23 @@ int command_write_page(uint8_t opcode, uint8_t* buf_cmd, size_t len_cmd, const u
       buf_cmd[len_cmd - 1] ^= buf_cmd[i];
     }
     modulino.getWire()->endTransmission(true);
-    modulino.getWire()->requestFrom(100, 1);
+    modulino.getWire()->requestFrom(bl_i2c_addr, 1);
     auto c = modulino.getWire()->read();
     if (c != 0x79) {
       SerialDebug.print("error first ack: ");
       SerialDebug.println(c, HEX);
       return -1;
     }
-    modulino.getWire()->beginTransmission(100);
+    modulino.getWire()->beginTransmission(bl_i2c_addr);
     modulino.getWire()->write(buf_cmd, len_cmd);
   }
   modulino.getWire()->endTransmission(true);
-  modulino.getWire()->requestFrom(100, 1);
+  modulino.getWire()->requestFrom(bl_i2c_addr, 1);
   auto c = modulino.getWire()->read();
   if (c != 0x79) {
     while (c == 0x76) {
       delay(10);
-      modulino.getWire()->requestFrom(100, 1);
+      modulino.getWire()->requestFrom(bl_i2c_addr, 1);
       c = modulino.getWire()->read();
     }
     if (c != 0x79) {
@@ -246,15 +362,15 @@ int command_write_page(uint8_t opcode, uint8_t* buf_cmd, size_t len_cmd, const u
   for (int i = 0; i < len_fw + 1; i++) {
     tmpbuf[len_fw + 1] ^= tmpbuf[i];
   }
-  modulino.getWire()->beginTransmission(100);
+  modulino.getWire()->beginTransmission(bl_i2c_addr);
   modulino.getWire()->write(tmpbuf, len_fw + 2);
   modulino.getWire()->endTransmission(true);
-  modulino.getWire()->requestFrom(100, 1);
+  modulino.getWire()->requestFrom(bl_i2c_addr, 1);
   c = modulino.getWire()->read();
   if (c != 0x79) {
     while (c == 0x76) {
       delay(10);
-      modulino.getWire()->requestFrom(100, 1);
+      modulino.getWire()->requestFrom(bl_i2c_addr, 1);
       c = modulino.getWire()->read();
     }
     if (c != 0x79) {
@@ -267,34 +383,34 @@ final_ack:
   return howmany + 1;
 }
 
-int command(uint8_t opcode, uint8_t* buf_cmd, size_t len_cmd, uint8_t* buf_resp, size_t len_resp, bool verbose) {
+int command(uint8_t bl_i2c_addr, uint8_t opcode, uint8_t* buf_cmd, size_t len_cmd, uint8_t* buf_resp, size_t len_resp, bool verbose) {
 
   SerialVerbose SerialDebug(verbose);
 
   uint8_t cmd[2];
   cmd[0] = opcode;
   cmd[1] = 0xFF ^ opcode;
-  modulino.getWire()->beginTransmission(100);
+  modulino.getWire()->beginTransmission(bl_i2c_addr);
   modulino.getWire()->write(cmd, 2);
   if (len_cmd > 0) {
     modulino.getWire()->endTransmission(true);
-    modulino.getWire()->requestFrom(100, 1);
+    modulino.getWire()->requestFrom(bl_i2c_addr, 1);
     auto c = modulino.getWire()->read();
     if (c != 0x79) {
       Serial.print("error first ack: ");
       Serial.println(c, HEX);
       return -1;
     }
-    modulino.getWire()->beginTransmission(100);
+    modulino.getWire()->beginTransmission(bl_i2c_addr);
     modulino.getWire()->write(buf_cmd, len_cmd);
   }
   modulino.getWire()->endTransmission(true);
-  modulino.getWire()->requestFrom(100, 1);
+  modulino.getWire()->requestFrom(bl_i2c_addr, 1);
   auto c = modulino.getWire()->read();
   if (c != 0x79) {
     while (c == 0x76) {
       delay(100);
-      modulino.getWire()->requestFrom(100, 1);
+      modulino.getWire()->requestFrom(bl_i2c_addr, 1);
       c = modulino.getWire()->read();
       SerialDebug.println("retry");
     }
@@ -308,13 +424,13 @@ int command(uint8_t opcode, uint8_t* buf_cmd, size_t len_cmd, uint8_t* buf_resp,
   if (len_resp == 0) {
     goto final_ack;
   }
-  modulino.getWire()->requestFrom(100, len_resp);
+  modulino.getWire()->requestFrom(bl_i2c_addr, len_resp);
   howmany = modulino.getWire()->read();
   for (int j = 0; j < howmany + 1; j++) {
     buf_resp[j] = modulino.getWire()->read();
   }
 
-  modulino.getWire()->requestFrom(100, 1);
+  modulino.getWire()->requestFrom(bl_i2c_addr, 1);
   c = modulino.getWire()->read();
   if (c != 0x79) {
     SerialDebug.print("error: ");
@@ -331,7 +447,7 @@ int sendReset() {
   for (int i = 0; i < 0x78; i++) {
     modulino.getWire()->beginTransmission(i);
     ret = modulino.getWire()->endTransmission();
-    if (ret != 2) {
+    if (ret == 0) { // Check if a device successfully acknowledged (ACK) the address scan
       modulino.getWire()->beginTransmission(i);
       modulino.getWire()->write(buf, 40);
       ret = modulino.getWire()->endTransmission();
