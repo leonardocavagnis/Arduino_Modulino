@@ -17,6 +17,7 @@
 #include <Arduino_HS300x.h>
 #include "Arduino_LTR381RGB.h"
 #include "Arduino.h"
+#include "7Semi_BME690.h"
 //#include <SE05X.h>  // need to provide a way to change Wire object
 
 #ifndef ARDUINO_API_VERSION
@@ -1061,6 +1062,83 @@ private:
   bool last_status[3];
 protected:
   uint8_t match[1] = { 0x04 };  // same as fw main.c
+};
+
+class ModulinoVoC : public Module {
+public:
+  ModulinoVoC(ModulinoHubPort* hubPort = nullptr)
+    : Module(0x76, "VOC", hubPort) {}
+
+  bool begin() {
+    if (hubPort != nullptr) {
+      hubPort->select();
+    }
+    
+    if (_sensor == nullptr) {
+      _sensor = new BME69X_7Semi(); 
+    }
+    
+    /** * Initialize the sensor with:
+     * - I2C Address: 0x76
+     * - Wire Interface: reference to the active Modulino I2C object
+     * - I2C Speed: 100kHz standard clock frequency
+     */
+    initialized = _sensor->begin(0x76, (TwoWire&)(*getWire()), 100000);
+    
+    __increaseI2CPriority();
+    
+    if (hubPort != nullptr) {
+      hubPort->clear();
+    }
+    return initialized;
+  }
+
+  operator bool() {
+    return initialized;
+  }
+
+  bool update() {
+    if (!initialized) return false;
+    
+    if (hubPort != nullptr) {
+      hubPort->select();
+    }
+  
+    bool ret = _sensor->getData(_temperature, _humidity, _pressure, _gasResistance); 
+    
+    if (hubPort != nullptr) {
+      hubPort->clear();
+    }
+    return ret;
+  }
+
+  float getTemperature() {
+    if (!initialized) return 0.0;
+    return _temperature;
+  }
+
+  float getHumidity() {
+    if (!initialized) return 0.0;
+    return _humidity;
+  }
+
+  float getPressure() {
+    if (!initialized) return 0.0;
+    return _pressure;
+  }
+
+  float getGasResistance() {
+    if (!initialized) return 0.0;
+    return _gasResistance;
+  }
+
+private:
+  BME69X_7Semi* _sensor = nullptr;
+  float _temperature = 0.0;
+  float _humidity = 0.0;
+  float _pressure = 0.0;
+  float _gasResistance = 0.0;
+  bool initialized = false;
 };
 
 #endif
