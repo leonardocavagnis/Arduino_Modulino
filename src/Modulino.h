@@ -17,6 +17,8 @@
 #include <Arduino_HS300x.h>
 #include "Arduino_LTR381RGB.h"
 #include "Arduino.h"
+#include <bsec3.h>  // from BME69x Sensor library + bsec3 (Bosch BSEC fusion)
+#include <bme69xLibrary.h>  // from BME69x Sensor library, raw sensor access (no fusion)
 //#include <SE05X.h>  // need to provide a way to change Wire object
 
 #ifndef ARDUINO_API_VERSION
@@ -1066,6 +1068,276 @@ private:
   bool last_status[3];
 protected:
   uint8_t match[1] = { 0x04 };  // same as fw main.c
+};
+
+// BME690-based air quality sensor (IAQ, CO2 equivalent, VOC equivalent, plus
+// raw temperature/humidity/pressure/gas resistance), fused via Bosch's BSEC3
+// library (Selectivity+IAQ solution). Unlike most other Modulino sensors this
+// one wraps a fusion algorithm rather than a plain register read: IAQ/CO2/VOC
+// start at neutral default values right after begin() and only become
+// trustworthy once their "accuracy" (0-3) has climbed with some run time and
+// exposure to varying air quality. update() returns true only when BSEC has
+// produced a new sample (about every 3 seconds), not on every call.
+class ModulinoVoC : public Module {
+public:
+  ModulinoVoC(ModulinoHubPort* hubPort = nullptr)
+    : Module(0x76, "VOC", hubPort) {}
+
+  bool begin() {
+    if (hubPort != nullptr) {
+      hubPort->select();
+    }
+
+    if (_bsec == nullptr) {
+      _bsec = new Bsec3();
+    }
+
+    /** Initialize the sensor with:
+     * - I2C Address: 0x76
+     * - Wire Interface: reference to the active Modulino I2C object
+     */
+    initialized = _bsec->begin(BME69X_I2C_ADDR_LOW, (TwoWire&)(*getWire()));
+
+    if (initialized) {
+      /* BME690 Selectivity+IAQ config preset (3.3V / 3s / 4 days), needed to
+       * subscribe to BSEC_OUTPUT_CO2_EQUIVALENT below. Declared locally (not
+       * at file scope) so the byte array doesn't get a global symbol that
+       * could collide across translation units.
+       */
+      const uint8_t bsecConfigSelectivity[] = {
+        #include "config/bme690/bme690_sel_33v_3s_4d/bsec_selectivity.txt"
+      };
+      initialized = _bsec->setConfig(bsecConfigSelectivity);
+    }
+
+    if (initialized) {
+      /* Needed to subscribe to BSEC_OUTPUT_TVOC_EQUIVALENT below. Safe to
+       * always enable: IAQ still calibrates normally with this set.
+       */
+      _bsec->setBaselineTrackerMode(3);
+
+      bsecSensor sensorList[] = {
+        BSEC_OUTPUT_RAW_TEMPERATURE,
+        BSEC_OUTPUT_RAW_PRESSURE,
+        BSEC_OUTPUT_RAW_HUMIDITY,
+        BSEC_OUTPUT_RAW_GAS,
+        BSEC_OUTPUT_IAQ,
+        BSEC_OUTPUT_CO2_EQUIVALENT,
+        BSEC_OUTPUT_TVOC_EQUIVALENT,
+        BSEC_OUTPUT_STABILIZATION_STATUS,
+        BSEC_OUTPUT_RUN_IN_STATUS
+      };
+      /* BSEC_SAMPLE_RATE_LP (~3s/sample) matches the polling cadence typical
+       * Modulino sketches use, and is required for CO2/TVOC subscription.
+       */
+      initialized = _bsec->updateSubscription(sensorList, ARRAY_LEN(sensorList), BSEC_SAMPLE_RATE_LP);
+    }
+
+    __increaseI2CPriority();
+
+    if (hubPort != nullptr) {
+      hubPort->clear();
+    }
+    return initialized;
+  }
+
+  operator bool() {
+    return initialized;
+  }
+
+  /* Returns true only when BSEC produced a new processed sample (roughly
+   * every 3 seconds at BSEC_SAMPLE_RATE_LP). If it returns false, the
+   * previous values returned by the getters below are still the latest
+   * available and can keep being used.
+   */
+  bool update() {
+    if (!initialized) return false;
+
+    if (hubPort != nullptr) {
+      hubPort->select();
+    }
+
+    _bsec->run();
+    const bsecOutputs* outputs = _bsec->getOutputs();
+    bool hasNewData = false;
+
+    /* Bsec3::getOutputs() reflects "has any sample ever been produced", not
+     * "was a new sample produced on this call" (its nOutputs field is sticky
+     * once set). Compare the timestamp of the last output against the one we
+     * already processed to detect a genuinely new sample.
+     */
+    if (outputs != nullptr && outputs->nOutputs > 0) {
+      int64_t ts = _bsec->getData(BSEC_OUTPUT_IAQ).time_stamp;
+      if (ts != _lastTimestamp) {
+        _lastTimestamp = ts;
+        hasNewData = true;
+      }
+    }
+
+    if (hasNewData) {
+      _temperature   = _bsec->getData(BSEC_OUTPUT_RAW_TEMPERATURE).signal;
+      _pressure      = _bsec->getData(BSEC_OUTPUT_RAW_PRESSURE).signal;
+      _humidity      = _bsec->getData(BSEC_OUTPUT_RAW_HUMIDITY).signal;
+      _gasResistance = _bsec->getData(BSEC_OUTPUT_RAW_GAS).signal;
+
+      bsecData iaq = _bsec->getData(BSEC_OUTPUT_IAQ);
+      _iaq = iaq.signal;
+      _iaqAccuracy = iaq.accuracy;
+
+      bsecData co2 = _bsec->getData(BSEC_OUTPUT_CO2_EQUIVALENT);
+      _co2 = co2.signal;
+      _co2Accuracy = co2.accuracy;
+
+      bsecData tvoc = _bsec->getData(BSEC_OUTPUT_TVOC_EQUIVALENT);
+      _tvoc = tvoc.signal;
+      _tvocAccuracy = tvoc.accuracy;
+
+      _stabilized = (_bsec->getData(BSEC_OUTPUT_STABILIZATION_STATUS).signal != 0.0f);
+      _runIn      = (_bsec->getData(BSEC_OUTPUT_RUN_IN_STATUS).signal != 0.0f);
+    }
+
+    if (hubPort != nullptr) {
+      hubPort->clear();
+    }
+    return hasNewData;
+  }
+
+  /* --- Raw readings --- */
+  float getTemperature()   { return initialized ? _temperature   : 0.0; }
+  float getHumidity()      { return initialized ? _humidity      : 0.0; }
+  float getPressure()      { return initialized ? _pressure      : 0.0; }
+  float getGasResistance() { return initialized ? _gasResistance : 0.0; }
+
+  /* --- Fused BSEC readings, with accuracy (0=calibrating, 3=reliable) --- */
+  float getIAQ()             { return initialized ? _iaq          : 0.0; }
+  uint8_t getIAQAccuracy()   { return initialized ? _iaqAccuracy  : 0;   }
+  float getCO2()              { return initialized ? _co2          : 0.0; }
+  uint8_t getCO2Accuracy()   { return initialized ? _co2Accuracy  : 0;   }
+  float getTVOC()             { return initialized ? _tvoc         : 0.0; }
+  uint8_t getTVOCAccuracy()  { return initialized ? _tvocAccuracy : 0;   }
+
+  /* True once the sensor has finished its short warm-up (stabilization) and
+   * its longer power-on conditioning (run-in). Before that, IAQ/CO2/TVOC are
+   * still at their neutral default values regardless of accuracy.
+   */
+  bool isReady() { return initialized ? (_stabilized && _runIn) : false; }
+
+  /* Diagnostics: raw BSEC / BME69x status codes from the last operation.
+   * Negative values are errors (e.g. -35 = feature mismatch, -36 = config
+   * corrupted/mismatched, -12 = invalid sample rate for a subscribed
+   * output). Useful to call right after begin() fails.
+   */
+  int getStatus()       { return _bsec ? (int)_bsec->status        : 0; }
+  int getSensorStatus() { return _bsec ? (int)_bsec->sensor.status : 0; }
+
+private:
+  Bsec3* _bsec = nullptr;
+  bool initialized = false;
+  int64_t _lastTimestamp = -1;
+
+  float _temperature = 0.0, _humidity = 0.0, _pressure = 0.0, _gasResistance = 0.0;
+  float _iaq = 50.0, _co2 = 500.0, _tvoc = 50.0;
+  uint8_t _iaqAccuracy = 0, _co2Accuracy = 0, _tvocAccuracy = 0;
+  bool _stabilized = false, _runIn = false;
+};
+
+// Raw BME690 readings (temperature, humidity, pressure, gas resistance),
+// using only the plain Bme69x driver from the "BME69x Sensor library" --
+// no BSEC fusion, no IAQ/CO2/VOC estimation, no config/subscription/sample
+// rate to worry about. update() forces a single measurement and blocks
+// until it completes (a few tens of milliseconds), so it behaves like most
+// other Modulino sensors: call it whenever you want a fresh reading, e.g.
+// once per loop() with a delay() in between. Use ModulinoVoC instead if you
+// want the fused air quality metrics (IAQ, CO2, VOC).
+class ModulinoVoC_Raw : public Module {
+public:
+  ModulinoVoC_Raw(ModulinoHubPort* hubPort = nullptr)
+    : Module(0x76, "VOC", hubPort) {}
+
+  bool begin() {
+    if (hubPort != nullptr) {
+      hubPort->select();
+    }
+
+    if (_sensor == nullptr) {
+      _sensor = new Bme69x();
+    }
+
+    _sensor->begin(BME69X_I2C_ADDR_LOW, (TwoWire&)(*getWire()));
+    initialized = (_sensor->checkStatus() != BME69X_ERROR);
+
+    if (initialized) {
+      /* Default oversampling, plus a simple forced-mode heater profile
+       * (300 degC for 100 ms), matching the library's own forced-mode
+       * example.
+       */
+      _sensor->setTPH();
+      _sensor->setHeaterProf(300, 100);
+    }
+
+    __increaseI2CPriority();
+
+    if (hubPort != nullptr) {
+      hubPort->clear();
+    }
+    return initialized;
+  }
+
+  operator bool() {
+    return initialized;
+  }
+
+  /* Forces a single measurement and blocks until it's ready, then caches
+   * the result. Returns false if not initialized or if this particular
+   * reading didn't produce valid gas data (rare, usually resolves on the
+   * next call).
+   */
+  bool update() {
+    if (!initialized) return false;
+
+    if (hubPort != nullptr) {
+      hubPort->select();
+    }
+
+    _sensor->setOpMode(BME69X_FORCED_MODE);
+    delayMicroseconds(_sensor->getMeasDur());
+
+    bool ret = false;
+    if (_sensor->fetchData()) {
+      bme69xData data;
+      _sensor->getData(data);
+      _temperature   = data.temperature;
+      _humidity      = data.humidity;
+      /* The driver reports pressure in Pascal; convert to hPa to match
+       * ModulinoVoC's getPressure() (which returns BSEC's RAW_PRESSURE,
+       * already in hPa).
+       */
+      _pressure      = data.pressure * 0.01f;
+      _gasResistance = data.gas_resistance;
+      ret = true;
+    }
+
+    if (hubPort != nullptr) {
+      hubPort->clear();
+    }
+    return ret;
+  }
+
+  float getTemperature()   { return initialized ? _temperature   : 0.0; }
+  float getHumidity()      { return initialized ? _humidity      : 0.0; }
+  float getPressure()      { return initialized ? _pressure      : 0.0; }
+  float getGasResistance() { return initialized ? _gasResistance : 0.0; }
+
+  /* Diagnostics: raw Bme69x status code from the last operation (0 = OK,
+   * negative = error, positive = warning).
+   */
+  int getStatus() { return _sensor ? (int)_sensor->status : 0; }
+
+private:
+  Bme69x* _sensor = nullptr;
+  bool initialized = false;
+
+  float _temperature = 0.0, _humidity = 0.0, _pressure = 0.0, _gasResistance = 0.0;
 };
 
 #endif
