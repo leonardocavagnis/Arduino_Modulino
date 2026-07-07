@@ -17,7 +17,7 @@
 #include <Arduino_HS300x.h>
 #include "Arduino_LTR381RGB.h"
 #include "Arduino.h"
-#include "7Semi_BME690.h"
+#include <Arduino_BME690.h>  // from Arduino_BME690 library
 //#include <SE05X.h>  // need to provide a way to change Wire object
 
 #ifndef ARDUINO_API_VERSION
@@ -1073,20 +1073,16 @@ public:
     if (hubPort != nullptr) {
       hubPort->select();
     }
-    
+
     if (_sensor == nullptr) {
-      _sensor = new BME69X_7Semi(); 
+      _sensor = new Arduino_BME690(*((TwoWire*)getWire()));
     }
-    
-    /** * Initialize the sensor with:
-     * - I2C Address: 0x76
-     * - Wire Interface: reference to the active Modulino I2C object
-     * - I2C Speed: 100kHz standard clock frequency
-     */
-    initialized = _sensor->begin(0x76, (TwoWire&)(*getWire()), 100000);
-    
+
+    // I2C Address: 0x76 (BME690_DEFAULT_ADDRESS)
+    initialized = _sensor->begin();
+
     __increaseI2CPriority();
-    
+
     if (hubPort != nullptr) {
       hubPort->clear();
     }
@@ -1099,13 +1095,19 @@ public:
 
   bool update() {
     if (!initialized) return false;
-    
+
     if (hubPort != nullptr) {
       hubPort->select();
     }
-  
-    bool ret = _sensor->getData(_temperature, _humidity, _pressure, _gasResistance); 
-    
+
+    bool ret = _sensor->read();
+    if (ret) {
+      _temperature = _sensor->readTemperature();
+      _humidity = _sensor->readHumidity();
+      _pressure = _sensor->readPressure();
+      _gasResistance = _sensor->readGas();
+    }
+
     if (hubPort != nullptr) {
       hubPort->clear();
     }
@@ -1133,7 +1135,7 @@ public:
   }
 
 private:
-  BME69X_7Semi* _sensor = nullptr;
+  Arduino_BME690* _sensor = nullptr;
   float _temperature = 0.0;
   float _humidity = 0.0;
   float _pressure = 0.0;
