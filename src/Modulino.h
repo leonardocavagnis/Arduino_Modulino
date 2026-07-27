@@ -194,6 +194,14 @@ private:
   char* name;
 protected:
   ModulinoHubPort* hubPort = nullptr;
+  /**
+   * @brief The resolved 7-bit I2C address of this module.
+   * For modules whose reply length or layout varies with an operating mode,
+   * and which therefore cannot use the fixed-size read() helper above.
+   */
+  uint8_t getAddress() const {
+    return address;
+  }
 };
 
 class ModulinoButtons : public Module {
@@ -1131,6 +1139,232 @@ public:
     return _buffer;
   }
 
+  /*
+   * ==========================================================================
+   *  Keyword spotting (on-board AI)
+   * ==========================================================================
+   * The module can run a small neural network locally and tell you when it
+   * hears the keyword it was trained for, instead of streaming audio.
+   * The active model lives in the module and survives power cycles: either
+   * the one it was shipped with, or your own, uploaded once with
+   * updateModel() (see the KWS_UpdateModel utility sketch).
+   */
+
+  /**
+   * @brief Switches the module to keyword spotting: from now on the module
+   *        listens locally and reports detections instead of streaming audio.
+   * @return true if the module accepted the mode change.
+   */
+  bool beginKeywordSpotting() {
+    _lastError = nullptr;
+    if (!setMode(MODE_KEYWORD_SPOTTING)) {
+      _lastError = "cannot switch the module to keyword spotting";
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * @brief Goes back to plain audio streaming (the default mode), so that
+   *        update()/getPcmSample() work again.
+   */
+  bool endKeywordSpotting() {
+    _lastError = nullptr;
+    if (!setMode(MODE_STREAM)) {
+      _lastError = "cannot switch the module back to audio streaming";
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * @brief Tells whether the keyword has been heard since the last call.
+   *        Each spoken word is reported exactly once, so this can be polled
+   *        as often as you like (10 times per second is plenty).
+   * @return true once per detection.
+   */
+  bool keywordDetected() {
+    KwsStatus status;
+
+    if (!readStatus(status) || status.mode != MODE_KEYWORD_SPOTTING) {
+      /* No status packet, or the module is not listening any more: it was
+       * most likely reset, and it powers up in streaming mode. Put it back
+       * into keyword spotting on its own, so the sketch keeps working; at
+       * most once per second, so that an unplugged module does not slow
+       * down the loop. */
+      if (_kwsActive && (millis() - _lastRecovery) > 1000) {
+        _lastRecovery = millis();
+        uint8_t frame[2] = { CMD_SET_MODE, MODE_KEYWORD_SPOTTING };
+        command(frame, sizeof(frame), 200);
+      }
+      return false;
+    }
+
+    if (!status.detected) {
+      return false;
+    }
+
+    _confidence = status.confidence;
+    _detections = status.eventCount;
+    return true;
+  }
+
+  /**
+   * @brief How sure the module was about the last detection, 0 to 100 %.
+   */
+  uint8_t keywordConfidence() {
+    return (uint8_t)(((uint16_t)_confidence * 100u) / 255u);
+  }
+
+  /**
+   * @brief Total number of detections since the module was powered on.
+   */
+  uint16_t keywordCount() {
+    return _detections;
+  }
+
+  /*
+   * --------------------------------------------------------------------------
+   *  Model management
+   * --------------------------------------------------------------------------
+   */
+
+  /** Optional callback to follow the upload progress (e.g. draw a bar). */
+  typedef void (*ModelProgressCallback)(uint32_t bytesSent, uint32_t bytesTotal);
+
+  /**
+   * @brief Uploads a keyword spotting model into the module, replacing the
+   *        one in use. The model is written to the spare memory slot and
+   *        only activated once fully verified, so an interrupted upload
+   *        leaves the previous model working.
+   *        Takes a few seconds; the model then persists across power cycles.
+   * @param package     Model package (.mmdl array produced by the training tool).
+   * @param size        Size of the package in bytes.
+   * @param onProgress  Optional progress callback.
+   * @return true if the new model is active. On failure see lastError().
+   */
+  bool updateModel(const uint8_t* package, uint32_t size,
+                   ModelProgressCallback onProgress = nullptr) {
+    _lastError = nullptr;
+
+    if (!isValidModel(package, size)) {
+      _lastError = "not a valid model package";
+      return false;
+    }
+
+    if (!setMode(MODE_MODEL_UPDATE)) {
+      _lastError = "module did not enter model update mode";
+      return false;
+    }
+
+    // Announce the transfer: size and checksum of the whole package, so the
+    // module can prepare its memory and later verify what it received.
+    uint32_t crc = crc32(package, size);
+    uint8_t begin[9] = { CMD_MODEL_BEGIN,
+                         (uint8_t)(size >> 24), (uint8_t)(size >> 16),
+                         (uint8_t)(size >> 8),  (uint8_t)size,
+                         (uint8_t)(crc >> 24),  (uint8_t)(crc >> 16),
+                         (uint8_t)(crc >> 8),   (uint8_t)crc };
+    // Erasing the destination slot takes a moment: allow a generous timeout.
+    if (!command(begin, sizeof(begin), 5000)) {
+      _lastError = "module refused the model transfer";
+      setMode(MODE_STREAM);
+      return false;
+    }
+
+    uint16_t seq = 0;
+    for (uint32_t sent = 0; sent < size; seq++) {
+      uint8_t chunk = (size - sent > MODEL_CHUNK) ? MODEL_CHUNK : (uint8_t)(size - sent);
+      uint8_t frame[4 + MODEL_CHUNK];
+      frame[0] = CMD_MODEL_DATA;
+      frame[1] = (uint8_t)(seq >> 8);
+      frame[2] = (uint8_t)seq;
+      frame[3] = chunk;
+      memcpy(&frame[4], &package[sent], chunk);
+
+      if (!command(frame, 4 + chunk, 500)) {
+        _lastError = "model transfer interrupted";
+        setMode(MODE_STREAM);
+        return false;
+      }
+
+      sent += chunk;
+      if (onProgress != nullptr) {
+        onProgress(sent, size);
+      }
+    }
+
+    // Verify and activate: the module checks the checksum before switching.
+    uint8_t commit[1] = { CMD_MODEL_COMMIT };
+    if (!command(commit, sizeof(commit), 2000)) {
+      _lastError = "model rejected by the module (corrupted or incompatible)";
+      setMode(MODE_STREAM);
+      return false;
+    }
+
+    setMode(MODE_STREAM);
+    return true;
+  }
+
+  /**
+   * @brief Goes back to the model the module was shipped with. Instant: the
+   *        factory model is always kept in the module and never overwritten.
+   */
+  bool restoreFactoryModel() {
+    _lastError = nullptr;
+
+    // Leave streaming first: while streaming, the module answers with audio
+    // and there would be no way to read the outcome of the command.
+    if (!setMode(MODE_MODEL_UPDATE)) {
+      _lastError = "module not responding";
+      return false;
+    }
+
+    uint8_t restore[1] = { CMD_MODEL_RESTORE };
+    bool ok = command(restore, sizeof(restore), 2000);
+    if (!ok) {
+      _lastError = "the module could not restore the factory model";
+    }
+
+    setMode(MODE_STREAM);
+    return ok;
+  }
+
+  /**
+   * @brief Why the last operation failed, as readable text (nullptr if none).
+   */
+  const char* lastError() {
+    return _lastError;
+  }
+
+  /**
+   * @brief The keyword a model package was trained for, e.g. "go".
+   *        Reads it from the package itself, no module needed.
+   */
+  static const char* modelKeyword(const uint8_t* package) {
+    static char keyword[MODEL_NAME_LEN + 1];
+    memcpy(keyword, &package[MODEL_NAME_OFFSET], MODEL_NAME_LEN);
+    keyword[MODEL_NAME_LEN] = '\0';
+    return keyword;
+  }
+
+  /**
+   * @brief Sanity check of a model package before sending it to the module.
+   */
+  static bool isValidModel(const uint8_t* package, uint32_t size) {
+    if (package == nullptr || size <= MODEL_HEADER_LEN) {
+      return false;
+    }
+    // Packages start with the "MMDL" marker...
+    if (memcmp(package, "MMDL", 4) != 0) {
+      return false;
+    }
+    // ...and declare a payload length that must match the array size.
+    uint32_t payload = (uint32_t)package[8] | ((uint32_t)package[9] << 8) |
+                       ((uint32_t)package[10] << 16) | ((uint32_t)package[11] << 24);
+    return (payload + MODEL_HEADER_LEN) == size;
+  }
+
   virtual uint8_t discover() {
     for (unsigned int i = 0; i < sizeof(match)/sizeof(match[0]); i++) {
       if (scan(match[i])) {
@@ -1146,6 +1380,150 @@ private:
   // ADPCM decoder internal state
   int16_t _predicted_sample;
   int8_t _index;
+
+  /* ---------------- Keyword spotting: protocol and internals -------------
+   * Wire format of the module (mirrors kws_defs.h in the node firmware).
+   * Kept private: sketches use the methods above, never these values. */
+  enum : uint8_t {
+    MODE_STREAM           = 0,     // audio streaming (module default)
+    MODE_KEYWORD_SPOTTING = 1,
+    MODE_MODEL_UPDATE     = 2,
+
+    CMD_SET_MODE          = 0xA0,
+    CMD_MODEL_BEGIN       = 0xB0,
+    CMD_MODEL_DATA        = 0xB1,
+    CMD_MODEL_COMMIT      = 0xB2,
+    CMD_MODEL_RESTORE     = 0xC0,
+
+    FRAME_SIZE            = 40,    // every command frame is padded to this
+    MODEL_CHUNK           = 32,    // model bytes per frame
+    STATUS_PACKET         = 8,     // reply length in the non-streaming modes
+    PACKET_MAGIC          = 0x4B,  // marks a reply as a status packet
+    STATUS_OK             = 0x5A,
+
+    MODEL_HEADER_LEN      = 40,    // .mmdl header
+    MODEL_NAME_OFFSET     = 16,
+    MODEL_NAME_LEN        = 16,
+  };
+
+  struct KwsStatus {
+    uint8_t  mode;
+    uint8_t  lastStatus;
+    bool     detected;
+    uint8_t  confidence;
+    uint16_t eventCount;
+    uint8_t  abiVersion;
+  };
+
+  const char* _lastError = nullptr;
+  uint8_t     _confidence = 0;
+  uint16_t    _detections = 0;
+  bool        _kwsActive = false;
+  uint32_t    _lastRecovery = 0;
+
+  /** Sends a command, zero padded to the fixed frame length. */
+  bool sendFrame(const uint8_t* payload, uint8_t len) {
+    uint8_t frame[FRAME_SIZE] = { 0 };
+    memcpy(frame, payload, len > FRAME_SIZE ? FRAME_SIZE : len);
+    return write(frame, FRAME_SIZE);
+  }
+
+  /**
+   * Reads the status packet. Fails when the module is not in a mode that
+   * produces one (in streaming mode the reply is audio, not status), which
+   * is also how we notice that the module has been reset behind our back.
+   */
+  bool readStatus(KwsStatus& out) {
+    if (getAddress() >= 0x7F) {
+      return false;
+    }
+    if (hubPort != nullptr) {
+      hubPort->select();
+    }
+
+    bool ok = false;
+    if (getWire()->requestFrom(getAddress(), (uint8_t)STATUS_PACKET) >= STATUS_PACKET) {
+      uint8_t p[STATUS_PACKET];
+      for (uint8_t i = 0; i < STATUS_PACKET; i++) {
+        p[i] = getWire()->read();
+      }
+      if (p[0] == PACKET_MAGIC) {
+        out.mode       = p[1];
+        out.lastStatus = p[2];
+        out.detected   = (p[3] != 0);
+        out.confidence = p[4];
+        out.eventCount = (uint16_t)p[5] | ((uint16_t)p[6] << 8);
+        out.abiVersion = p[7];
+        ok = true;
+      }
+    }
+    while (getWire()->available()) {
+      getWire()->read();
+    }
+
+    if (hubPort != nullptr) {
+      hubPort->clear();
+    }
+    return ok;
+  }
+
+  /**
+   * Sends a command and waits for the module to report the outcome.
+   * While the module is busy writing its flash memory it simply does not
+   * answer, so "no reply yet" means "still working": keep asking until it
+   * does, or until the timeout expires.
+   */
+  bool command(const uint8_t* payload, uint8_t len, uint16_t timeout_ms) {
+    if (!sendFrame(payload, len)) {
+      return false;  // module never discovered on the bus
+    }
+
+    uint32_t start = millis();
+    do {
+      delay(2);  // give the module the time to process the frame
+      KwsStatus status;
+      if (readStatus(status)) {
+        return (status.lastStatus == STATUS_OK);
+      }
+    } while ((millis() - start) < timeout_ms);
+
+    return false;
+  }
+
+  bool setMode(uint8_t mode) {
+    uint8_t frame[2] = { CMD_SET_MODE, mode };
+
+    if (mode == MODE_STREAM) {
+      // From now on the module replies with audio, not with status packets,
+      // so there is nothing to read back as confirmation.
+      bool sent = sendFrame(frame, sizeof(frame));
+      delay(5);
+      resetDecoder();  // the audio decoder must restart from a known state
+      _kwsActive = false;
+      return sent;
+    }
+
+    bool ok = command(frame, sizeof(frame), 500);
+    _kwsActive = ok && (mode == MODE_KEYWORD_SPOTTING);
+    return ok;
+  }
+
+  /** CRC32 (IEEE 802.3), same algorithm the module uses to verify uploads. */
+  static uint32_t crc32(const uint8_t* data, uint32_t len) {
+    static const uint32_t table[16] = {
+      0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC,
+      0x76DC4190, 0x6B6B51F4, 0x4DB26158, 0x5005713C,
+      0xEDB88320, 0xF00F9344, 0xD6D6A3E8, 0xCB61B38C,
+      0x9B64C2B0, 0x86D3D2D4, 0xA00AE278, 0xBDBDF21C
+    };
+    uint32_t crc = 0xFFFFFFFF;
+    while (len--) {
+      crc ^= *data++;
+      crc = (crc >> 4) ^ table[crc & 0x0F];
+      crc = (crc >> 4) ^ table[crc & 0x0F];
+    }
+    return ~crc;
+  }
 
   // Standard IMA ADPCM tables
   const int IndexTable[16] = {
