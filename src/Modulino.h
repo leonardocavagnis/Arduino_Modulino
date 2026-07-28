@@ -1082,6 +1082,21 @@ public:
     }
 
   /**
+   * @brief Finds the module and starts from a known state.
+   * @note  The module remembers the mode a previous sketch left it in (it
+   *        only forgets on power loss). Without resetting it here, an audio
+   *        sketch run after a keyword spotting one would keep receiving
+   *        detection packets instead of audio, and appear broken.
+   */
+  bool begin() {
+    if (!Module::begin()) {
+      return false;
+    }
+    setMode(MODE_STREAM);
+    return true;
+  }
+
+  /**
    * @brief Resets the ADPCM decoder state (useful at startup or on sync loss)
    */
   void resetDecoder() {
