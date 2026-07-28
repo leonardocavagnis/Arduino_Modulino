@@ -1353,3 +1353,9 @@ const uint8_t model_stop[] = {
   0x00, 0x00, 0x00, 0x03,
 };
 const uint32_t model_stop_size = sizeof(model_stop);
+
+/* Aliases: a sketch can switch model by changing only its #include. */
+#undef KWS_MODEL
+#undef KWS_MODEL_SIZE
+#define KWS_MODEL       model_stop
+#define KWS_MODEL_SIZE  model_stop_size
