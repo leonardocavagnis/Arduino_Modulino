@@ -1223,6 +1223,19 @@ public:
     return _detections;
   }
 
+  /**
+   * @brief The word the module is currently listening for, e.g. "go".
+   *        Read from the module itself, so it always matches the model in
+   *        use - handy to tell the user what to say.
+   */
+  const char* keywordName() {
+    if (_keyword[0] == '\0') {
+      KwsStatus status;
+      readStatus(status);  // fills the cache
+    }
+    return _keyword;
+  }
+
   /*
    * --------------------------------------------------------------------------
    *  Model management
@@ -1397,7 +1410,8 @@ private:
 
     FRAME_SIZE            = 40,    // every command frame is padded to this
     MODEL_CHUNK           = 32,    // model bytes per frame
-    STATUS_PACKET         = 8,     // reply length in the non-streaming modes
+    STATUS_PACKET         = 24,    // reply length in the non-streaming modes
+    STATUS_KEYWORD_OFFSET = 8,     // where the active keyword starts in it
     PACKET_MAGIC          = 0x4B,  // marks a reply as a status packet
     STATUS_OK             = 0x5A,
 
@@ -1420,6 +1434,7 @@ private:
   uint16_t    _detections = 0;
   bool        _kwsActive = false;
   uint32_t    _lastRecovery = 0;
+  char        _keyword[MODEL_NAME_LEN + 1] = "";
 
   /** Sends a command, zero padded to the fixed frame length. */
   bool sendFrame(const uint8_t* payload, uint8_t len) {
@@ -1454,6 +1469,11 @@ private:
         out.confidence = p[4];
         out.eventCount = (uint16_t)p[5] | ((uint16_t)p[6] << 8);
         out.abiVersion = p[7];
+        // Cache the active keyword: every status read refreshes it, so
+        // keywordName() never has to spend an extra read (which would
+        // swallow a pending detection).
+        memcpy(_keyword, &p[STATUS_KEYWORD_OFFSET], MODEL_NAME_LEN);
+        _keyword[MODEL_NAME_LEN] = '\0';
         ok = true;
       }
     }

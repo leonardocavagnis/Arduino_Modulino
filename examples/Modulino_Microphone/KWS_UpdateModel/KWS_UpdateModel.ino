@@ -6,8 +6,8 @@
  * cycle. Then use KWS_Basic (or your own sketch) to listen for the word.
  *
  * PICK THE KEYWORD: change the #include below, nothing else.
- *   "model_hey_arduino.h" -> "hey arduino"
- *   "model_stop.h"        -> "stop"
+ *   "model_go.h"   -> "go"
+ *   "model_stop.h" -> "stop"
  *
  * To train your own word, see tools/README.md in the Modulino Microphone
  * firmware repository: it turns your recordings into a .h file to drop next
@@ -25,7 +25,7 @@
 
 #include <Arduino_Modulino.h>
 
-#include "model_hey_arduino.h"
+#include "model_go.h"
 //#include "model_stop.h"
 
 ModulinoMicrophone mic;

@@ -33,7 +33,10 @@ void setup() {
     while (1);
   }
 
-  Serial.println("Listening... say the keyword!");
+  // The module reports which word it was trained for
+  Serial.print("Listening... say \"");
+  Serial.print(mic.keywordName());
+  Serial.println("\"!");
 }
 
 void loop() {
