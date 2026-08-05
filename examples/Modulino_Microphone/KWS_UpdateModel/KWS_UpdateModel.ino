@@ -6,8 +6,8 @@
  * cycle. Then use KWS_Basic (or your own sketch) to listen for the word.
  *
  * PICK THE KEYWORD: change the #include below, nothing else.
- *   "model_go.h"   -> "go"
- *   "model_stop.h" -> "stop"
+ *   "model_right.h" -> "right"
+ *   "model_stop.h"  -> "stop"
  *
  * To train your own word, see tools/README.md in the Modulino Microphone
  * firmware repository: it turns your recordings into a .h file to drop next
@@ -25,8 +25,10 @@
 
 #include <Arduino_Modulino.h>
 
-#include "model_go.h"
-//#include "model_stop.h"
+// Pick the model to upload: only the #include changes, each header defines
+// the same KWS_MODEL alias that the sketch below uses.
+#include "model_right.h"            // "right"
+//#include "model_stop.h"           // "stop"
 
 ModulinoMicrophone mic;
 

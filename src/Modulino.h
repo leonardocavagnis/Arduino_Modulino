@@ -1387,7 +1387,15 @@ public:
     if (memcmp(package, "MMDL", 4) != 0) {
       return false;
     }
-    // ...and declare a payload length that must match the array size.
+    // ...declare the front-end contract this model was trained for. Checking
+    // it here means a mismatched model fails instantly, instead of after
+    // several seconds of uploading it only to be refused by the module.
+    uint16_t abi = (uint16_t)package[MODEL_ABI_OFFSET] |
+                   ((uint16_t)package[MODEL_ABI_OFFSET + 1] << 8);
+    if (abi != MODEL_ABI_VERSION) {
+      return false;
+    }
+    // ...and a payload length that must match the array size.
     uint32_t payload = (uint32_t)package[8] | ((uint32_t)package[9] << 8) |
                        ((uint32_t)package[10] << 16) | ((uint32_t)package[11] << 24);
     return (payload + MODEL_HEADER_LEN) == size;
@@ -1431,6 +1439,8 @@ private:
     STATUS_OK             = 0x5A,
 
     MODEL_HEADER_LEN      = 40,    // .mmdl header
+    MODEL_ABI_OFFSET      = 6,     // front-end contract version
+    MODEL_ABI_VERSION     = 1,
     MODEL_NAME_OFFSET     = 16,
     MODEL_NAME_LEN        = 16,
   };
