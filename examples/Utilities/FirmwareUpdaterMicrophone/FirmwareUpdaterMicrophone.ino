@@ -41,8 +41,8 @@
 bool flashU3(uint8_t bl_i2c_addr, const uint8_t* binary, size_t lenght, bool verbose = true);
 Module modulino;
 
-// Change this to true if programming a blank Modulino Microphone
-// For all other modules, keep this false
+// Manual override. No longer needed to recover a bricked module: when the
+// application does not answer, the sketch already assumes the microphone.
 bool force_microphone = false;
 
 bool is_boot_mode = false;
@@ -56,31 +56,28 @@ void setup() {
   // Set I2C clock to 400kHz for faster communication
   modulino.getWire()->setClock(400000);
 
-  // Check if the Modulino Microphone is in bootloader mode (address 0x6C - STM32U3)
-  modulino.getWire()->beginTransmission(BL_U3_I2C_ADDRESS); 
-  is_boot_mode |= (modulino.getWire()->endTransmission() == 0);
+  // Does the application answer? The zero-length probe is safe HERE (0x2A):
+  // it is the running application that replies, not the bootloader.
+  modulino.getWire()->beginTransmission(0x2A);
+  bool is_microphone = (modulino.getWire()->endTransmission() == 0);
+
+  // NEVER probe 0x6C with a zero-length write. START + address + STOP with no
+  // data leaves the ST system bootloader stretching SCL forever, and every
+  // later command times out. If the application does not answer, the module is
+  // already in boot mode - the first GET will confirm it.
+  is_boot_mode = !is_microphone;
 
   if (is_boot_mode) {
     Serial.println("boot mode");
-  }
-
-  bool is_microphone = false;
-
-  // Send reset command to module if not already in boot mode
-  // IMPORTANT: Connect only ONE module at a time
-  if (!is_boot_mode) {
-    // Check if connected module is a microphone (address 0x2A)
-    modulino.getWire()->beginTransmission(0x2A);
-    is_microphone = (modulino.getWire()->endTransmission() == 0);
-
-    if (is_microphone) {
-      Serial.println("microphone mode");
-    }
+    is_microphone = true;   // this sketch only ever flashes the microphone
+  } else {
+    Serial.println("microphone mode");
 
     // Send reset command to enter bootloader mode
+    // IMPORTANT: Connect only ONE module at a time
     if (sendReset() != 0) {
       Serial.println("Send reset failed");
-      while(1);
+      while (1);
     }
   }
 
@@ -99,6 +96,24 @@ void setup() {
   } else {
     Serial.println("Unknown modulino type. Aborting firmware update.");
     result = false;
+  }
+
+  // The module keeps running whatever state it is in until it is reset. After
+  // a BOOT0 recovery it is still sitting in the ST system bootloader, so a
+  // power cycle is the only way to start the firmware just written.
+  Serial.println();
+  if (result) {
+    Serial.println("Firmware update complete.");
+  } else {
+    Serial.println("Firmware update FAILED.");
+  }
+  if (is_boot_mode) {
+    Serial.println("1. Remove the BOOT0 jumper (3.3V) from the Modulino.");
+    Serial.println("2. Unplug and plug the Modulino back in.");
+    Serial.println("Leaving boot mode needs a power cycle: the module will NOT");
+    Serial.println("start the new firmware until you do it.");
+  } else {
+    Serial.println("Unplug and plug the Modulino back in to start it.");
   }
 
 #if defined(ARDUINO_UNOWIFIR4)
