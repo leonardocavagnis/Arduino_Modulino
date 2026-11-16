@@ -20,6 +20,7 @@ ModulinoMicrophone mic;
 
 void setup() {
   Serial.begin(115200);
+  while(!Serial) { }
   Modulino.begin();
 
   if (!mic.begin()) {

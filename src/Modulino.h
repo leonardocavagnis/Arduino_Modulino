@@ -1266,7 +1266,7 @@ public:
    *        only activated once fully verified, so an interrupted upload
    *        leaves the previous model working.
    *        Takes a few seconds; the model then persists across power cycles.
-   * @param package     Model package (.mmdl array produced by the training tool).
+   * @param package     Model package (.mmei array produced by the training tool).
    * @param size        Size of the package in bytes.
    * @param onProgress  Optional progress callback.
    * @return true if the new model is active. On failure see lastError().
@@ -1383,8 +1383,8 @@ public:
     if (package == nullptr || size <= MODEL_HEADER_LEN) {
       return false;
     }
-    // Packages start with the "MMDL" marker...
-    if (memcmp(package, "MMDL", 4) != 0) {
+    // Packages start with the "MMEI" marker...
+    if (memcmp(package, "MMEI", 4) != 0) {
       return false;
     }
     // ...declare the front-end contract this model was trained for. Checking
@@ -1438,7 +1438,7 @@ private:
     PACKET_MAGIC          = 0x4B,  // marks a reply as a status packet
     STATUS_OK             = 0x5A,
 
-    MODEL_HEADER_LEN      = 40,    // .mmdl header
+    MODEL_HEADER_LEN      = 40,    // .mmei header
     MODEL_ABI_OFFSET      = 6,     // front-end contract version
     MODEL_ABI_VERSION     = 1,
     MODEL_NAME_OFFSET     = 16,
