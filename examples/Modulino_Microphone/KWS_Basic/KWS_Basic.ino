@@ -6,7 +6,7 @@
  * the word it knows.
  *
  * Say the keyword and watch the Serial Monitor. Out of the box the module
- * listens for "go"; to teach it a different word, run the KWS_UpdateModel
+ * listens for "Hey Arduino"; to teach it a different word, run the KWS_UpdateModel
  * utility sketch once.
  *
  * This example code is in the public domain.
