@@ -3,20 +3,17 @@
  *
  * Teaches the Modulino Microphone a new keyword. Run this sketch once: the
  * model is stored inside the module and stays there, also after a power
- * cycle. Then use KWS_Basic (or your own sketch) to listen for the word.
+ * cycle. Then use KWS_Basic example (or your own sketch) to listen for the word.
  *
- * PICK THE KEYWORD: change the #include below, nothing else.
+ * PICK THE KEYWORD: change the #include below
  *   "model_right.h" -> "right"
  *   "model_stop.h"  -> "stop"
+ *   "model_helloworld.h"  -> "hello world"
  *
- * To train your own word, see tools/README.md in the Modulino Microphone
- * firmware repository: it turns your recordings into a .h file to drop next
- * to this sketch.
- *
- * Safe to interrupt: the new model is only activated once it has been fully
+ * The new model is only activated once it has been fully
  * received and verified, so unplugging the module halfway through simply
- * leaves the previous keyword working. KWS_RestoreFactoryModel always brings
- * back the keyword the module was shipped with.
+ * leaves the previous keyword working. KWS_RestoreFactoryModel example always 
+ * brings back the default keyword.
  *
  * This example code is in the public domain.
  * Copyright (C) Arduino s.r.l. and/or its affiliated companies
@@ -25,10 +22,10 @@
 
 #include <Arduino_Modulino.h>
 
-// Pick the model to upload: only the #include changes, each header defines
-// the same KWS_MODEL alias that the sketch below uses.
+// Pick the model to upload: only the #include changes
 #include "model_right.h"            // "right"
 //#include "model_stop.h"           // "stop"
+//#include "model_helloworld.h"     // "hello world"    
 
 ModulinoMicrophone mic;
 
