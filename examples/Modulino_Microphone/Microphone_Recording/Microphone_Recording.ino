@@ -2,7 +2,7 @@
  * Modulino Microphone - Audio Capture and Data Dump
  *
  * This example demonstrates how to use the Modulino Microphone class
- * to capture approx 0.5 seconds of raw PCM audio data into a local buffer 
+ * to capture approx 0.25 seconds of raw PCM audio data into a local buffer 
  * without blocking execution, and subsequently dump the samples to the Serial Monitor.
  *
  * INSTRUCTIONS:
@@ -22,8 +22,8 @@
 
 ModulinoMicrophone mic;
 
-// 61 * 2 blocks = 122 blocks. At 4ms per block, this records for approx 488ms (~0.5 seconds)
-const int TOTAL_BLOCKS = 61*2;  
+// Adjust this value based on your board's available RAM
+const int TOTAL_BLOCKS = 63; // At 4ms per block, this records for approx 252ms (~0.25 seconds).
 const int TOTAL_SAMPLES = TOTAL_BLOCKS * 64;
 
 int16_t audio_storage[TOTAL_SAMPLES];
@@ -41,7 +41,7 @@ void setup() {
 
   if (mic.begin()) {
     Serial.println("Microphone ready!");
-    Serial.println("Send 's' to record approx 0.5 seconds...");
+    Serial.println("Send 's' to record approx 0.25 seconds...");
   } else {
     Serial.println("Error: Microphone not detected.");
     while(1);
